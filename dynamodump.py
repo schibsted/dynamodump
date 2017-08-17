@@ -140,7 +140,7 @@ def do_put_bucket_object(profile, region, bucket, bucket_object):
         sys.exit(1)
 
 
-def do_get_s3_archive(profile, region, bucket, table, archive):
+def do_get_s3_archive(profile, region, bucket, table, archive, dumpPath):
     """
     Fetch latest file named filename from S3
 
@@ -178,11 +178,11 @@ def do_get_s3_archive(profile, region, bucket, table, archive):
     # Therefore, just get item from bucket based on table name since that's what we name the files.
     filename = None
     for d in contents["Contents"]:
-        if d["Key"] == "dump/{}.{}".format(table, archive_type):
+        if d["Key"] == "{}/{}.{}".format(dumpPath, table, archive_type):
             filename = d["Key"]
 
     if not filename:
-        logging.exception("Unable to find file to restore from.  "
+        logging.exception("Unable to find file to restore from (%s).  ".format(filename),
                           "Confirm the name of the table you're restoring.")
         sys.exit(1)
 
@@ -602,6 +602,13 @@ def do_backup(dynamo, read_capacity, tableQueue=None, srcTable=None):
 
             tableQueue.task_done()
 
+def find_table_path(dump_data_path, source_table, destination_table):
+    basepath = dump_data_path + os.sep + source_table + os.sep
+    if os.path.exists(basepath + SCHEMA_FILE):
+        return basepath
+    if os.path.exists(basepath + destination_table + os.sep + SCHEMA_FILE):
+        return basepath + destination_table + os.sep
+    
 
 def do_restore(dynamo, sleep_interval, source_table, destination_table, write_capacity):
     """
@@ -622,7 +629,9 @@ def do_restore(dynamo, sleep_interval, source_table, destination_table, write_ca
             logging.info("Cannot find \"%s/%s\" directory containing dump files!"
                          % (CURRENT_WORKING_DIR, source_table))
             sys.exit(1)
-    table_data = json.load(open(dump_data_path + os.sep + source_table + os.sep + SCHEMA_FILE))
+    logging.info(dump_data_path + os.sep + source_table + os.sep + SCHEMA_FILE)
+    table_path = find_table_path(dump_data_path, source_table, destination_table)
+    table_data = json.load(open(table_path + SCHEMA_FILE))
     table = table_data["Table"]
     table_attribute_definitions = table["AttributeDefinitions"]
     table_table_name = destination_table
@@ -691,17 +700,14 @@ def do_restore(dynamo, sleep_interval, source_table, destination_table, write_ca
     if not args.schemaOnly:
         # read data files
         logging.info("Restoring data for " + destination_table + " table..")
-        data_file_list = os.listdir(dump_data_path + os.sep + source_table +
-                                    os.sep + DATA_DIR + os.sep)
+        data_file_list = os.listdir(table_path + DATA_DIR + os.sep)
         data_file_list.sort()
 
         for data_file in data_file_list:
             logging.info("Processing " + data_file + " of " + destination_table)
             items = []
             item_data = json.load(
-                open(
-                    dump_data_path + os.sep + source_table + os.sep + DATA_DIR + os.sep + data_file
-                )
+                open( table_path + DATA_DIR + os.sep + data_file)
             )
             items.extend(item_data["Items"])
 
@@ -963,7 +969,7 @@ def main():
 
         # If backups are in S3 download and extract the backup to use during restoration
         if args.bucket:
-            do_get_s3_archive(args.profile, args.region, args.bucket, args.srcTable, args.archive)
+            do_get_s3_archive(args.profile, args.region, args.bucket, args.srcTable, args.archive, args.dumpPath)
 
         if dest_table.find("*") != -1:
             matching_destination_tables = get_table_name_matches(conn, dest_table, prefix_separator)
